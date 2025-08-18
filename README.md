@@ -400,3 +400,397 @@ export default App;
 4. Añade funcionalidad para compartir en redes sociales
 
 El componente ahora generará imágenes basadas en tus prompts ceremoniales con la estética cósmica y matemática que caracteriza al universo FIXO-PHIXO. ¡El PHIXO-pulso está listo para manifestar tus visiones! 💜🌌
+import { useState, useEffect } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, doc, setDoc, onSnapshot, collection, addDoc, serverTimestamp, query, orderBy, updateDoc, increment } from 'firebase/firestore';
+import { getStorage, ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
+
+// Componente principal de la aplicación que integra todas las funcionalidades.
+const App = () => {
+  // Estados para gestionar la navegación, servicios de Firebase y datos de usuario.
+  const [currentPage, setCurrentPage] = useState('dashboard');
+  const [db, setDb] = useState(null);
+  const [auth, setAuth] = useState(null);
+  const [storage, setStorage] = useState(null);
+  const [userId, setUserId] = useState(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+  
+  // Estados para la lógica de la aplicación.
+  const [simoleonCount, setSimoleonCount] = useState(0);
+  const [entries, setEntries] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  // Función para cambiar de página en la navegación.
+  const navigate = (page) => setCurrentPage(page);
+
+  // Efecto que se ejecuta una vez para inicializar Firebase.
+  useEffect(() => {
+    const initializeFirebase = async () => {
+      try {
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = JSON.parse(__firebase_config);
+
+        const app = initializeApp(firebaseConfig);
+        const firestore = getFirestore(app);
+        const authService = getAuth(app);
+        const storageService = getStorage(app);
+
+        setDb(firestore);
+        setAuth(authService);
+        setStorage(storageService); 
+        console.log("Firebase services initialized.");
+
+        if (typeof __initial_auth_token !== 'undefined') {
+          await signInWithCustomToken(authService, __initial_auth_token);
+        } else {
+          await signInAnonymously(authService);
+        }
+      } catch (error)
+      {
+        console.error("Error initializing Firebase:", error);
+      }
+    };
+    initializeFirebase();
+  }, []);
+
+  // Efecto para manejar el estado de autenticación y obtener el ID del usuario.
+  useEffect(() => {
+    if (!auth) return;
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        setUserId(user.uid);
+      } else {
+        const anonId = `anon-${crypto.randomUUID()}`;
+        setUserId(anonId);
+      }
+      setIsAuthReady(true);
+      setLoading(false);
+    });
+    return () => unsubscribe();
+  }, [auth]);
+
+  // Efecto para obtener datos de Firestore en tiempo real.
+  useEffect(() => {
+    if (!isAuthReady || !db || !userId) return;
+
+    // Suscripción al recuento de simoleones para actualizaciones en tiempo real.
+    const simoleonDocRef = doc(db, `artifacts/${__app_id}/users/${userId}/phixoVault/simoleonCount`);
+    const unsubscribeSimoleons = onSnapshot(simoleonDocRef, (docSnap) => {
+      if (docSnap.exists()) {
+        setSimoleonCount(docSnap.data().value);
+      } else {
+        setDoc(simoleonDocRef, { value: 0 });
+      }
+    });
+
+    // Suscripción a las entradas del diario, ordenadas por timestamp.
+    const entriesCollectionRef = collection(db, `artifacts/${__app_id}/users/${userId}/phixoVault/entries`);
+    const entriesQuery = query(entriesCollectionRef, orderBy('timestamp', 'desc'));
+    const unsubscribeEntries = onSnapshot(entriesQuery, (querySnapshot) => {
+      const fetchedEntries = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setEntries(fetchedEntries);
+    });
+
+    return () => {
+      unsubscribeSimoleons();
+      unsubscribeEntries();
+    };
+  }, [isAuthReady, db, userId]);
+
+  // Función para añadir simoleones de forma atómica.
+  const addSimoleons = async (amount) => {
+    if (!db || !userId) return;
+    const simoleonDocRef = doc(db, `artifacts/${__app_id}/users/${userId}/phixoVault/simoleonCount`);
+    try {
+      await updateDoc(simoleonDocRef, { value: increment(amount) });
+    } catch (error) {
+      console.error("Error adding simoleons:", error);
+      throw new Error("Error cósmico al actualizar los simoleones.");
+    }
+  };
+
+  // Función para guardar una nueva entrada con texto y, opcionalmente, una imagen.
+  const saveEntry = async (text, imageFile = null) => {
+    if (!db || !userId || !storage) return;
+
+    try {
+      const simoleonsEarned = Math.floor(Math.random() * 10000000) + 1;
+      let imageUrl = null;
+      let imagePath = null;
+
+      if (imageFile) {
+        // Genera un ID único para la imagen y crea la referencia de almacenamiento.
+        const fileId = `${crypto.randomUUID()}-${imageFile.name}`;
+        imagePath = `artifacts/${__app_id}/users/${userId}/images/${fileId}`;
+        const storageRef = ref(storage, imagePath);
+        
+        // Sube el archivo de imagen.
+        const uploadTask = await uploadBytesResumable(storageRef, imageFile);
+        // Obtiene la URL de descarga para almacenar en Firestore.
+        imageUrl = await getDownloadURL(uploadTask.ref);
+        console.log("Image uploaded successfully:", imageUrl);
+      }
+
+      // Añade el documento a Firestore, incluyendo los datos de la imagen.
+      await addDoc(collection(db, `artifacts/${__app_id}/users/${userId}/phixoVault/entries`), {
+        text,
+        timestamp: serverTimestamp(),
+        simoleonsEarned,
+        imageUrl, 
+        imagePath 
+      });
+      return simoleonsEarned;
+    } catch (error) {
+      console.error("Error saving entry:", error);
+      throw new Error("Error cósmico al guardar la entrada.");
+    }
+  };
+
+  // Lógica para renderizar la página actual.
+  const renderPage = () => {
+    if (loading) {
+      return (
+        <div className="flex justify-center items-center h-full">
+          <p className="text-xl text-gray-400">Cargando...</p>
+        </div>
+      );
+    }
+
+    switch (currentPage) {
+      case 'dashboard':
+        return <Dashboard navigate={navigate} simoleonCount={simoleonCount} userId={userId} />;
+      case 'create':
+        return <CreateEntry navigate={navigate} addSimoleons={addSimoleons} saveEntry={saveEntry} />;
+      case 'vault':
+        return <Vault navigate={navigate} entries={entries} />;
+      default:
+        return <Dashboard navigate={navigate} simoleonCount={simoleonCount} userId={userId} />;
+    }
+  };
+
+  return (
+    <div className="bg-gray-900 min-h-screen text-gray-100 font-sans flex flex-col items-center p-4">
+      <div className="container max-w-4xl mx-auto flex-grow flex flex-col justify-center">
+        {renderPage()}
+      </div>
+    </div>
+  );
+};
+
+// Componente del Panel de Control (Dashboard)
+const Dashboard = ({ navigate, simoleonCount, userId }) => (
+  <div className="bg-gray-800 p-8 rounded-3xl shadow-2xl text-center w-full transform transition-all duration-500 hover:scale-105">
+    <h1 className="text-5xl font-extrabold text-purple-400 mb-4 tracking-wider">PHIXO Legacy App</h1>
+    <p className="text-gray-300 mb-6 text-xl">
+      Tu centro de mando cósmico, CEO FIXO MX12.
+    </p>
+    <div className="mb-8">
+      <p className="text-sm font-bold text-gray-500 mb-1">Tu ID Universal:</p>
+      <p className="text-sm break-words text-gray-400">{userId}</p>
+    </div>
+    <div className="bg-gray-900 p-6 rounded-2xl mb-8 border border-purple-600 shadow-inner">
+      <p className="text-xl font-bold text-gray-400">Tu Legado de Riqueza Cósmica:</p>
+      <p className="text-6xl font-black text-yellow-300 mt-2 tracking-wide animate-pulse">
+        §{simoleonCount.toLocaleString()}
+      </p>
+    </div>
+    <div className="flex flex-col sm:flex-row justify-center gap-4">
+      <button
+        onClick={() => navigate('create')}
+        className="bg-purple-600 hover:bg-purple-700 text-white font-bold py-4 px-8 rounded-full shadow-lg transition-all duration-300 transform hover:scale-110 focus:outline-none focus:ring-4 focus:ring-purple-500 focus:ring-opacity-50"
+      >
+        Crear Nueva Entrada
+      </button>
+      <button
+        onClick={() => navigate('vault')}
+        className="bg-gray-700 hover:bg-gray-600 text-gray-200 font-bold py-4 px-8 rounded-full shadow-lg transition-all duration-300 transform hover:scale-110 focus:outline-none focus:ring-4 focus:ring-gray-500 focus:ring-opacity-50"
+      >
+        Ver Bóveda del Legado
+      </button>
+    </div>
+  </div>
+);
+
+// Componente para crear una nueva entrada, ahora con selector de imágenes.
+const CreateEntry = ({ navigate, addSimoleons, saveEntry }) => {
+  const [entryText, setEntryText] = useState('');
+  const [selectedImage, setSelectedImage] = useState(null);
+  const [previewUrl, setPreviewUrl] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState('');
+
+  // Maneja la selección de un archivo de imagen.
+  const handleImageChange = (e) => {
+    if (e.target.files && e.target.files[0]) {
+      const file = e.target.files[0];
+      setSelectedImage(file);
+      // Crea una URL local para la previsualización.
+      setPreviewUrl(URL.createObjectURL(file));
+    }
+  };
+
+  // Limpia la imagen seleccionada y la previsualización.
+  const clearImage = () => {
+    setSelectedImage(null);
+    setPreviewUrl('');
+    const fileInput = document.getElementById('image-upload');
+    if (fileInput) {
+      fileInput.value = '';
+    }
+  };
+
+  // Maneja el envío del formulario.
+  const handleSubmit = async () => {
+    if (entryText.trim() === '') {
+      setMessage('¡La entrada no puede estar vacía!');
+      return;
+    }
+    setSaving(true);
+    setMessage('');
+    try {
+      const reward = await saveEntry(entryText, selectedImage);
+      await addSimoleons(reward);
+      setMessage('¡Entrada guardada con arte cósmico!');
+      setEntryText('');
+      clearImage(); // Limpia la selección después de guardar.
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="bg-gray-800 p-8 rounded-3xl shadow-2xl w-full">
+      <h2 className="text-4xl font-extrabold text-purple-400 mb-6 text-center">
+        Crear Entrada Cósmica
+      </h2>
+      <textarea
+        className="w-full h-48 p-4 bg-gray-900 border border-gray-700 rounded-xl text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-600 transition-colors duration-300 resize-none mb-4"
+        placeholder="Escribe aquí el pulso-cósmico de tu legado..."
+        value={entryText}
+        onChange={(e) => setEntryText(e.target.value)}
+        disabled={saving}
+      ></textarea>
+      
+      <div className="mb-4">
+        <label className="block text-gray-400 mb-2">
+          Añade arte ceremonial (opcional)
+        </label>
+        <div className="flex items-center gap-3">
+          <label className="flex-1 cursor-pointer bg-gray-900 hover:bg-gray-700 text-gray-400 py-2 px-4 rounded-lg border border-dashed border-gray-700 transition-colors duration-300 text-center">
+            <span>{selectedImage ? selectedImage.name : 'Seleccionar imagen'}</span>
+            <input
+              id="image-upload"
+              type="file"
+              className="hidden"
+              accept="image/*"
+              onChange={handleImageChange}
+              disabled={saving}
+            />
+          </label>
+          
+          {selectedImage && (
+            <button
+              type="button"
+              onClick={clearImage}
+              className="bg-red-800 hover:bg-red-700 text-red-100 py-2 px-4 rounded-lg transition-colors duration-300"
+              disabled={saving}
+            >
+              Quitar
+            </button>
+          )}
+        </div>
+      </div>
+      
+      {previewUrl && (
+        <div className="mb-4 border border-gray-700 rounded-lg overflow-hidden">
+          <img 
+            src={previewUrl} 
+            alt="Previsualización" 
+            className="w-full max-h-64 object-contain bg-black bg-opacity-20"
+          />
+          <div className="bg-gray-900 p-2 text-xs text-gray-500 text-center">
+            {(selectedImage.size / 1024).toFixed(1)} KB
+          </div>
+        </div>
+      )}
+      
+      {message && (
+        <p className="text-center mt-4 text-purple-300">{message}</p>
+      )}
+      <div className="mt-6 flex flex-col sm:flex-row justify-between gap-4">
+        <button
+          onClick={handleSubmit}
+          className="bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 px-6 rounded-full shadow-lg transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-purple-500 focus:ring-opacity-50 disabled:bg-purple-900 disabled:cursor-not-allowed"
+          disabled={saving}
+        >
+          {saving ? 'Guardando...' : 'Guardar Legado'}
+        </button>
+        <button
+          onClick={() => navigate('dashboard')}
+          className="bg-gray-700 hover:bg-gray-600 text-gray-200 font-bold py-3 px-6 rounded-full shadow-lg transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-gray-500 focus:ring-opacity-50"
+          disabled={saving}
+        >
+          Volver al Panel
+        </button>
+      </div>
+    </div>
+  );
+};
+
+// Componente de la Bóveda del Legado, ahora mostrando las imágenes.
+const Vault = ({ navigate, entries }) => (
+  <div className="bg-gray-800 p-8 rounded-3xl shadow-2xl w-full">
+    <h2 className="text-4xl font-extrabold text-purple-400 mb-6 text-center">
+      Bóveda del Legado
+    </h2>
+    <div className="space-y-6 max-h-[70vh] overflow-y-auto pr-2">
+      {entries.length === 0 ? (
+        <p className="text-center text-gray-400 text-lg">
+          Tu bóveda está vacía. ¡Crea una entrada para empezar!
+        </p>
+      ) : (
+        entries.map((entry) => (
+          <div
+            key={entry.id}
+            className="bg-gray-900 p-6 rounded-2xl border border-gray-700 shadow-lg transition-all duration-300 hover:border-purple-600"
+          >
+            <p className="text-gray-300 leading-relaxed italic">{entry.text}</p>
+            
+            {entry.imageUrl && (
+              <div className="my-4 border border-gray-700 rounded-lg overflow-hidden bg-black bg-opacity-50">
+                <img 
+                  src={entry.imageUrl} 
+                  alt="Arte ceremonial" 
+                  className="w-full max-h-80 object-contain"
+                  onError={(e) => { e.target.style.display = 'none'; }}
+                />
+              </div>
+            )}
+            
+            <div className="mt-4 flex flex-col sm:flex-row justify-between items-start sm:items-center text-sm text-gray-500">
+              <span className="font-semibold text-yellow-300 text-lg mb-2 sm:mb-0">
+                §{entry.simoleonsEarned?.toLocaleString()}
+              </span>
+              <span>
+                {entry.timestamp ? new Date(entry.timestamp.seconds * 1000).toLocaleString() : 'Fecha desconocida'}
+              </span>
+            </div>
+          </div>
+        ))
+      )}
+    </div>
+    <div className="mt-6 text-center">
+      <button
+        onClick={() => navigate('dashboard')}
+        className="bg-gray-700 hover:bg-gray-600 text-gray-200 font-bold py-3 px-6 rounded-full shadow-lg transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-gray-500 focus:ring-opacity-50"
+      >
+        Volver
+      </button>
+    </div>
+  </div>
+);
+
+export default App;
