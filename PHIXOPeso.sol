@@ -26,6 +26,7 @@ contract PHIXOPeso {
     }
 
     function transfer(address _to, uint256 _value) public returns (bool) {
+        require(_to != address(0), "transfer to the zero address");
         require(balances[msg.sender] >= _value, "Saldo insuficiente");
         balances[msg.sender] -= _value;
         balances[_to] += _value;
