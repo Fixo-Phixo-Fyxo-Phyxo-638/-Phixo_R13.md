@@ -72,3 +72,4 @@ The velocity of both robots is indeed \( v(t) = -\sin(t) \).
 3. **Verify they are the same**: Both derivatives are identical, confirming the velocities match at any time, regardless of the constant (which represents initial position and doesn't affect velocity).
 
 This aligns with the fundamental theorem of calculus: The derivative undoes integration, and constants vanish in differentiation.
+        require(balances[msg.sender] >= _value, "Saldo insuficiente");
